@@ -1,5 +1,5 @@
 import asyncio
-import os
+from random import randint
 from tcputils import *
 
 
@@ -43,7 +43,7 @@ class Servidor:
             flags = flags | (FLAGS_SYN | FLAGS_ACK)
 
             # Alterando valor de ACK_NO como um número aleatório
-            conexao.seq_no = os.urandom(0xffff)
+            conexao.seq_no = randint(0, 0xffff)
             conexao.ack_no = seq_no + 1
 
             # Invertendo o endereço de origem e de destino
@@ -100,11 +100,27 @@ class Conexao:
         """
         Usado pela camada de aplicação para enviar dados
         """
-        # TODO: implemente aqui o envio de dados.
-        # Chame self.servidor.rede.enviar(segmento, dest_addr) para enviar o segmento
-        # que você construir para a camada de rede.
-        pass
+        # Construindo e enviando os pacotes
+        dst_addr, dst_port, src_addr, src_port = self.id_conexao
 
+        flags = 0 | FLAGS_ACK
+
+        for i in range(int(len(dados)/MSS)):
+            ini = i*MSS
+            fim = min(len(dados), (i+1)*MSS)
+
+            payload = dados[ini:fim]
+
+            segmento = make_header(src_port, dst_port, self.seq_no, self.ack_no, flags)
+            segmento_checksum_corrigido = fix_checksum(segmento+payload, src_addr, dst_addr)
+            self.servidor.rede.enviar(segmento_checksum_corrigido, dst_addr)
+
+            self.timer = asyncio.get_event_loop().call_later(self.timeoutInterval, self._timer)
+            self.pacotes_sem_ack.append( [segmento_checksum_corrigido, len(payload), dst_addr, round(time(), 5)] )
+
+            # Atualizando seq_no com os dados recém enviados
+            self.seq_no += len(payload)
+            
     def fechar(self):
         """
         Usado pela camada de aplicação para fechar a conexão
