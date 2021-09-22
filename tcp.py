@@ -82,10 +82,40 @@ class Conexao:
         print('Este é um exemplo de como fazer um timer')
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        # TODO: trate aqui o recebimento de segmentos provenientes da camada de rede.
-        # Chame self.callback(self, dados) para passar dados para a camada de aplicação após
-        # garantir que eles não sejam duplicados e que tenham sido recebidos em ordem.
         print('recebido payload: %r' % payload)
+
+	    # Passo 2: verificando os segmentos e pacotes da camada de rede enviados
+
+        # Se der flag ACK, precisa encerrar o timer e remover da lista de pacotes que precisam ser confirmados
+        if (flags & FLAGS_ACK) == FLAGS_ACK and ack_no > self.seq_no_base:
+            self.seq_no_base = ack_no
+            if self.pacotes_sem_ack:
+                self._atualizar_timeout_interval()
+                self.timer.cancel()
+                self.pacotes_sem_ack.pop(0)
+                if self.pacotes_sem_ack:
+                    self.timer = asyncio.get_event_loop().call_later(self.timeoutInterval, self._timer)
+
+        # Se for um pedido de encerrar a conexão
+        if (flags & FLAGS_FIN) == FLAGS_FIN:
+            payload = b''
+            self.ack_no += 1
+        elif len(payload) <= 0:
+            return
+
+	    # Verificando se o pacote não é duplicado ou se está fora de ordem
+        if seq_no != self.ack_no:
+            return
+
+        self.callback(self, payload)
+        self.ack_no += len(payload)
+
+        # Construindo e enviando pacote ACK
+        dst_addr, dst_port, src_addr, src_port = self.id_conexao
+        segmento = make_header(src_port, dst_port, self.seq_no_base, self.ack_no, FLAGS_ACK)
+        segmento_checksum_corrigido = fix_checksum(segmento, src_addr, dst_addr)
+
+        self.servidor.rede.enviar(segmento_checksum_corrigido, dst_addr)
 
     # Os métodos abaixo fazem parte da API
 
