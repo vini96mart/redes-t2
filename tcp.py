@@ -1,5 +1,6 @@
 import asyncio
 from random import randint
+from time import time
 from tcputils import *
 
 
@@ -32,10 +33,12 @@ class Servidor:
         payload = segment[4*(flags>>12):]
         id_conexao = (src_addr, src_port, dst_addr, dst_port)
 
-        if (flags & FLAGS_SYN) == FLAGS_SYN:
-            # Passo 1: aceitar a conexão com flag SYN+ACK
 
-            # A flag SYN estar setadaa significa que é um cliente tentando estabelecer uma conexão nova
+        # Passo 1: aceitar a conexão com flag SYN+ACK
+
+        if (flags & FLAGS_SYN) == FLAGS_SYN:
+
+            # A flag SYN estar setada significa que é um cliente tentando estabelecer uma conexão nova
             conexao = self.conexoes[id_conexao] = Conexao(self, id_conexao)
             
             # Criando as flags
@@ -58,7 +61,7 @@ class Servidor:
             # Incrementando seq_no para considerar o SYN enviado
             conexao.seq_no += 1
             conexao.seq_no_base = conexao.seq_no
-            
+
             if self.callback:
                 self.callback(conexao)
         elif id_conexao in self.conexoes:
@@ -73,18 +76,51 @@ class Conexao:
     def __init__(self, servidor, id_conexao):
         self.servidor = servidor
         self.id_conexao = id_conexao
+        self.seq_no = None
+        self.ack_no = None
         self.callback = None
-        self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)  # um timer pode ser criado assim; esta linha é só um exemplo e pode ser removida
-        #self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
+        self.timer = None
+        self.seq_no_base = None
+        self.pacotes_sem_ack = []
+        self.timeoutInterval = 1
+        self.devRTT = None
+        self.estimatedRTT = None
+        self.fila_envio = []
 
-    def _exemplo_timer(self):
-        # Esta função é só um exemplo e pode ser removida
-        print('Este é um exemplo de como fazer um timer')
+
+    # Passo 5: montando o timer (?)
+
+    def _timer(self):
+        if self.pacotes_sem_ack:
+            segmento, _, dst_addr, _ = self.pacotes_sem_ack[0]
+            # Reenviando pacote
+            self.servidor.rede.enviar(segmento, dst_addr)
+            self.pacotes_sem_ack[0][3] = None
+
+
+    # Passo 6: calculando o TimeoutInterval
+
+    def _atualizar_timeout_interval(self):
+        _, _, _, sampleRTT = self.pacotes_sem_ack[0]
+        if sampleRTT is None:
+            return
+
+        sampleRTT = round(time(), 5) - sampleRTT
+        if self.estimatedRTT is None:
+            self.estimatedRTT = sampleRTT
+            self.devRTT = sampleRTT/2
+        else:
+            self.estimatedRTT = 0.875*self.estimatedRTT + 0.125*sampleRTT
+            self.devRTT = 0.75*self.devRTT + 0.25 * abs(sampleRTT-self.estimatedRTT)
+
+        self.timeoutInterval = self.estimatedRTT + 4*self.devRTT
+
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
         print('recebido payload: %r' % payload)
 
-	    # Passo 2: verificando os segmentos e pacotes da camada de rede enviados
+
+	# Passo 2: verificando os segmentos e pacotes da camada de rede enviados
 
         # Se der flag ACK, precisa encerrar o timer e remover da lista de pacotes que precisam ser confirmados
         if (flags & FLAGS_ACK) == FLAGS_ACK and ack_no > self.seq_no_base:
@@ -103,7 +139,7 @@ class Conexao:
         elif len(payload) <= 0:
             return
 
-	    # Verificando se o pacote não é duplicado ou se está fora de ordem
+	# Verificando se o pacote não é duplicado ou se está fora de ordem
         if seq_no != self.ack_no:
             return
 
@@ -130,6 +166,10 @@ class Conexao:
         """
         Usado pela camada de aplicação para enviar dados
         """
+
+
+	# Passo 2 e 3: envio dos dados recebidos dos pacotes e dados
+
         # Construindo e enviando os pacotes
         dst_addr, dst_port, src_addr, src_port = self.id_conexao
 
@@ -150,7 +190,7 @@ class Conexao:
 
             # Atualizando seq_no com os dados recém enviados
             self.seq_no += len(payload)
-            
+
     def fechar(self):
         """
         Usado pela camada de aplicação para fechar a conexão
